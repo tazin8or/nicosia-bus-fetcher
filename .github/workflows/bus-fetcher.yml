@@ -47,10 +47,16 @@ jobs:
           with urllib.request.urlopen(req, timeout=25) as r:
               xml = r.read().decode()
 
-          print("XML snippet:", xml[:1000].replace("\n", " "))
+          print("===== XML LENGTH:", len(xml))
+          print("===== XML START =====")
+          print(xml[:1500])
+          print("===== XML END =====")
+
+          visits = re.findall(r'<MonitoredStopVisit[^>]*>[\s\S]*?</MonitoredStopVisit>', xml, re.I)
+          print("===== FOUND VISITS:", len(visits))
 
           arrivals = []
-          for block in re.findall(r'<MonitoredStopVisit[^>]*>[\s\S]*?</MonitoredStopVisit>', xml, re.I):
+          for block in visits:
               def tag(t):
                   m = re.search(rf'<{t}[^>]*>([^<]+)</{t}>', block, re.I)
                   return m.group(1).strip() if m else None
@@ -92,7 +98,7 @@ jobs:
               "debug_count": len(arrivals)
           }
 
-          print("Found arrivals:", len(arrivals))
+          print("===== FINAL ARRIVALS COUNT:", len(arrivals))
 
           kv_url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['CF_ACCOUNT_ID']}/storage/kv/namespaces/{os.environ['CF_NAMESPACE_ID']}/values/stop_706"
           kv_req = urllib.request.Request(
@@ -105,5 +111,5 @@ jobs:
               method="PUT"
           )
           with urllib.request.urlopen(kv_req) as kv_resp:
-              print("KV response:", kv_resp.read().decode())
+              print("===== KV RESPONSE:", kv_resp.read().decode())
           PY
