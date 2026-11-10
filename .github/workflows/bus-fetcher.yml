@@ -1,120 +1,81 @@
-name: Update Nicosia Bus 706
+import os, json, urllib.request, re
+from datetime import datetime
 
-on:
-  schedule:
-    - cron: '*/1 * * * *'
-  workflow_dispatch:
+def try_siri(ref):
+    SOAP = f'''<?xml version="1.0" encoding="utf-8"?>
+    <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+      <soap:Body>
+        <GetStopMonitoring xmlns="http://tempuri.org/">
+          <request>
+            <ServiceRequestInfo>
+              <RequestTimestamp>{datetime.utcnow().isoformat()}Z</RequestTimestamp>
+              <RequestorRef>test</RequestorRef>
+            </ServiceRequestInfo>
+            <Request version="1.3" xmlns="">
+              <MonitoringRef xmlns="http://www.siri.org.uk/siri">{ref}</MonitoringRef>
+              <MaximumStopVisits xmlns="http://www.siri.org.uk/siri">8</MaximumStopVisits>
+              <StopMonitoringDetailLevel xmlns="http://www.siri.org.uk/siri">normal</StopMonitoringDetailLevel>
+            </Request>
+          </request>
+        </GetStopMonitoring>
+      </soap:Body>
+    </soap:Envelope>'''
 
-jobs:
-  fetch:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fetch SIRI and write to Cloudflare KV
-        env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_NAMESPACE_ID: ${{ secrets.CF_NAMESPACE_ID }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-        run: |
-          python3 - << 'PY'
-          import os, json, urllib.request, re
-          from datetime import datetime
+    req = urllib.request.Request(
+        "http://20.19.98.194:8313/SiriWS.asmx",
+        data=SOAP.encode(),
+        headers={
+            "Content-Type": "text/xml; charset=utf-8",
+            "SOAPAction": "http://tempuri.org/GetStopMonitoring",
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            xml = r.read().decode()
+        visits = len(re.findall(r'<MonitoredStopVisit', xml, re.I))
+        print(f"SIRI REF={ref}  LEN={len(xml)}  VISITS={visits}")
+        if visits > 0:
+            idx = xml.find('<MonitoredStopVisit')
+            print("SAMPLE:", xml[idx:idx+500])
+        return xml, visits
+    except Exception as e:
+        print(f"SIRI REF={ref} ERROR:", e)
+        return "", 0
 
-          def try_stop(ref):
-              SOAP = f'''<?xml version="1.0" encoding="utf-8"?>
-              <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-                <soap:Body>
-                  <GetStopMonitoring xmlns="http://tempuri.org/">
-                    <request>
-                      <Request version="1.3" xmlns="">
-                        <MonitoringRef xmlns="http://www.siri.org.uk/siri">{ref}</MonitoringRef>
-                        <MaximumStopVisits xmlns="http://www.siri.org.uk/siri">8</MaximumStopVisits>
-                        <StopMonitoringDetailLevel xmlns="http://www.siri.org.uk/siri">normal</StopMonitoringDetailLevel>
-                      </Request>
-                    </request>
-                  </GetStopMonitoring>
-                </soap:Body>
-              </soap:Envelope>'''
+# Test a couple of references with the fuller request
+for ref in ["706", "3162"]:
+    try_siri(ref)
 
-              req = urllib.request.Request(
-                  "http://20.19.98.194:8313/SiriWS.asmx",
-                  data=SOAP.encode(),
-                  headers={
-                      "Content-Type": "text/xml; charset=utf-8",
-                      "SOAPAction": "http://tempuri.org/GetStopMonitoring",
-                      "User-Agent": "Mozilla/5.0"
-                  }
-              )
-              with urllib.request.urlopen(req, timeout=20) as r:
-                  xml = r.read().decode()
+# Also check GTFS-RT quickly
+print("\n===== Checking GTFS-RT =====")
+try:
+    gtfs_req = urllib.request.Request("http://20.19.98.194:8328/Api/api/gtfs-realtime")
+    with urllib.request.urlopen(gtfs_req, timeout=15) as r:
+        data = r.read()
+        print("GTFS-RT status: OK, length =", len(data))
+        print("First 100 bytes:", data[:100])
+except Exception as e:
+    print("GTFS-RT error:", e)
 
-              visits = len(re.findall(r'<MonitoredStopVisit', xml, re.I))
-              print(f"REF={ref}  XML_LEN={len(xml)}  VISITS={visits}")
-              if visits > 0:
-                  idx = xml.find('<MonitoredStopVisit')
-                  print("SAMPLE:", xml[idx:idx+400])
-              return xml, visits
-
-          refs = ["706", "3162", "9:706", "Nicosia:706", "CY:706", "706-1"]
-          best_xml = None
-          best_ref = None
-          for ref in refs:
-              xml, visits = try_stop(ref)
-              if visits > 0 and best_xml is None:
-                  best_xml = xml
-                  best_ref = ref
-
-          print("BEST REF:", best_ref)
-
-          arrivals = []
-          if best_xml:
-              for block in re.findall(r'<MonitoredStopVisit[^>]*>[\s\S]*?</MonitoredStopVisit>', best_xml, re.I):
-                  def tag(t):
-                      m = re.search(rf'<{t}[^>]*>([^<]+)</{t}>', block, re.I)
-                      return m.group(1).strip() if m else None
-                  route = tag("LineRef") or tag("PublishedLineName") or tag("LineName")
-                  if not route: continue
-                  dest = tag("DestinationName") or tag("DestinationDisplay") or ""
-                  expected = tag("ExpectedArrivalTime") or tag("ExpectedDepartureTime")
-                  aimed = tag("AimedArrivalTime") or tag("AimedDepartureTime")
-                  minutes = None
-                  time_str = ""
-                  use_time = expected or aimed
-                  if use_time:
-                      try:
-                          eta = datetime.fromisoformat(use_time.replace("Z", "+00:00"))
-                          minutes = max(0, round((eta - datetime.now(eta.tzinfo)).total_seconds() / 60))
-                          time_str = eta.strftime("%H:%M")
-                      except:
-                          pass
-                  arrivals.append({
-                      "route": route.split("/")[-1],
-                      "destination": dest,
-                      "minutes": minutes,
-                      "time": time_str,
-                      "live": bool(expected)
-                  })
-
-          arrivals.sort(key=lambda x: x["minutes"] if x["minutes"] is not None else 999)
-
-          payload = {
-              "stop": "Ave. Georgiou Griva Digeni - Neas Egkomis",
-              "code": "706",
-              "stop_id": best_ref or "706",
-              "updated": datetime.utcnow().isoformat() + "Z",
-              "arrivals": arrivals[:6],
-              "debug_count": len(arrivals)
-          }
-
-          kv_url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['CF_ACCOUNT_ID']}/storage/kv/namespaces/{os.environ['CF_NAMESPACE_ID']}/values/stop_706"
-          kv_req = urllib.request.Request(
-              kv_url,
-              data=json.dumps(payload).encode(),
-              headers={
-                  "Authorization": f"Bearer {os.environ['CF_API_TOKEN']}",
-                  "Content-Type": "application/json"
-              },
-              method="PUT"
-          )
-          with urllib.request.urlopen(kv_req) as kv_resp:
-              print("KV:", kv_resp.read().decode())
-          PY
+# Write empty payload for now so KV stays updated
+payload = {
+    "stop": "Ave. Georgiou Griva Digeni - Neas Egkomis",
+    "code": "706",
+    "stop_id": "706",
+    "updated": datetime.utcnow().isoformat() + "Z",
+    "arrivals": [],
+    "note": "debug run"
+}
+kv_url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['CF_ACCOUNT_ID']}/storage/kv/namespaces/{os.environ['CF_NAMESPACE_ID']}/values/stop_706"
+kv_req = urllib.request.Request(
+    kv_url,
+    data=json.dumps(payload).encode(),
+    headers={
+        "Authorization": f"Bearer {os.environ['CF_API_TOKEN']}",
+        "Content-Type": "application/json"
+    },
+    method="PUT"
+)
+with urllib.request.urlopen(kv_req) as kv_resp:
+    print("KV:", kv_resp.read().decode())
