@@ -20,10 +20,20 @@ jobs:
         run: |
           python3 - << 'PY'
           import os, json, urllib.request
-          from datetime import datetime
+          from datetime import datetime, timezone, timedelta
           from google.transit import gtfs_realtime_pb2
 
-          # Download GTFS-RT
+          # Cyprus timezone (UTC+2, or UTC+3 in summer - adjust if needed)
+          CYPRUS_OFFSET = timedelta(hours=2)
+          cyprus_tz = timezone(CYPRUS_OFFSET)
+
+          # Route mapping: GTFS route_id -> (short number, destination)
+          ROUTE_MAP = {
+              "420021": ("42", "Makario Stadium - SOPAZ - University of Cyprus"),
+              "120012": ("12", "Solomou Sq. - Makario Stadium - Al. Panagouli"),
+              # Add more routes here as needed
+          }
+
           print("Downloading GTFS-RT...")
           resp = urllib.request.urlopen("http://20.19.98.194:8328/Api/api/gtfs-realtime", timeout=30)
           data = resp.read()
@@ -33,22 +43,29 @@ jobs:
           feed.ParseFromString(data)
 
           arrivals = []
-          STOP_ID = "3162"  # or try "706" if this doesn't match
+          STOP_ID = "3162"
+
+          now_utc = datetime.now(timezone.utc)
 
           for entity in feed.entity:
               if entity.HasField("trip_update"):
                   tu = entity.trip_update
                   for stu in tu.stop_time_update:
                       if stu.stop_id == STOP_ID or stu.stop_id == "706":
-                          route = tu.trip.route_id if tu.trip.route_id else "?"
+                          raw_route = tu.trip.route_id if tu.trip.route_id else "?"
+                          short_route, destination = ROUTE_MAP.get(raw_route, (raw_route, ""))
+
                           minutes = None
                           time_str = ""
                           if stu.HasField("arrival") and stu.arrival.HasField("time"):
-                              eta = datetime.utcfromtimestamp(stu.arrival.time)
-                              minutes = max(0, round((eta - datetime.utcnow()).total_seconds() / 60))
-                              time_str = eta.strftime("%H:%M")
+                              eta_utc = datetime.fromtimestamp(stu.arrival.time, tz=timezone.utc)
+                              eta_cyprus = eta_utc.astimezone(cyprus_tz)
+                              minutes = max(0, round((eta_utc - now_utc).total_seconds() / 60))
+                              time_str = eta_cyprus.strftime("%H:%M")
+
                           arrivals.append({
-                              "route": route,
+                              "route": short_route,
+                              "destination": destination,
                               "minutes": minutes,
                               "time": time_str,
                               "live": True
@@ -61,7 +78,7 @@ jobs:
               "stop": "Ave. Georgiou Griva Digeni - Neas Egkomis",
               "code": "706",
               "stop_id": STOP_ID,
-              "updated": datetime.utcnow().isoformat() + "Z",
+              "updated": datetime.now(cyprus_tz).isoformat(),
               "arrivals": arrivals[:6]
           }
 
