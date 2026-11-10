@@ -1,81 +1,70 @@
-import os, json, urllib.request, re
-from datetime import datetime
+name: Update Nicosia Bus 706
 
-def try_siri(ref):
-    SOAP = f'''<?xml version="1.0" encoding="utf-8"?>
-    <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-      <soap:Body>
-        <GetStopMonitoring xmlns="http://tempuri.org/">
-          <request>
-            <ServiceRequestInfo>
-              <RequestTimestamp>{datetime.utcnow().isoformat()}Z</RequestTimestamp>
-              <RequestorRef>test</RequestorRef>
-            </ServiceRequestInfo>
-            <Request version="1.3" xmlns="">
-              <MonitoringRef xmlns="http://www.siri.org.uk/siri">{ref}</MonitoringRef>
-              <MaximumStopVisits xmlns="http://www.siri.org.uk/siri">8</MaximumStopVisits>
-              <StopMonitoringDetailLevel xmlns="http://www.siri.org.uk/siri">normal</StopMonitoringDetailLevel>
-            </Request>
-          </request>
-        </GetStopMonitoring>
-      </soap:Body>
-    </soap:Envelope>'''
+on:
+  schedule:
+    - cron: "*/1 * * * *"
+  workflow_dispatch:
 
-    req = urllib.request.Request(
-        "http://20.19.98.194:8313/SiriWS.asmx",
-        data=SOAP.encode(),
-        headers={
-            "Content-Type": "text/xml; charset=utf-8",
-            "SOAPAction": "http://tempuri.org/GetStopMonitoring",
-            "User-Agent": "Mozilla/5.0"
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            xml = r.read().decode()
-        visits = len(re.findall(r'<MonitoredStopVisit', xml, re.I))
-        print(f"SIRI REF={ref}  LEN={len(xml)}  VISITS={visits}")
-        if visits > 0:
-            idx = xml.find('<MonitoredStopVisit')
-            print("SAMPLE:", xml[idx:idx+500])
-        return xml, visits
-    except Exception as e:
-        print(f"SIRI REF={ref} ERROR:", e)
-        return "", 0
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch SIRI and write to Cloudflare KV
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_NAMESPACE_ID: ${{ secrets.CF_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          python3 - << 'PY'
+          import os, json, urllib.request, re
+          from datetime import datetime
 
-# Test a couple of references with the fuller request
-for ref in ["706", "3162"]:
-    try_siri(ref)
+          def try_siri(ref):
+              SOAP = f'''<?xml version="1.0" encoding="utf-8"?>
+              <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+                <soap:Body>
+                  <GetStopMonitoring xmlns="http://tempuri.org/">
+                    <request>
+                      <ServiceRequestInfo>
+                        <RequestTimestamp>{datetime.utcnow().isoformat()}Z</RequestTimestamp>
+                        <RequestorRef>test</RequestorRef>
+                      </ServiceRequestInfo>
+                      <Request version="1.3" xmlns="">
+                        <MonitoringRef xmlns="http://www.siri.org.uk/siri">{ref}</MonitoringRef>
+                        <MaximumStopVisits xmlns="http://www.siri.org.uk/siri">8</MaximumStopVisits>
+                        <StopMonitoringDetailLevel xmlns="http://www.siri.org.uk/siri">normal</StopMonitoringDetailLevel>
+                      </Request>
+                    </request>
+                  </GetStopMonitoring>
+                </soap:Body>
+              </soap:Envelope>'''
 
-# Also check GTFS-RT quickly
-print("\n===== Checking GTFS-RT =====")
-try:
-    gtfs_req = urllib.request.Request("http://20.19.98.194:8328/Api/api/gtfs-realtime")
-    with urllib.request.urlopen(gtfs_req, timeout=15) as r:
-        data = r.read()
-        print("GTFS-RT status: OK, length =", len(data))
-        print("First 100 bytes:", data[:100])
-except Exception as e:
-    print("GTFS-RT error:", e)
+              req = urllib.request.Request(
+                  "http://20.19.98.194:8313/SiriWS.asmx",
+                  data=SOAP.encode(),
+                  headers={
+                      "Content-Type": "text/xml; charset=utf-8",
+                      "SOAPAction": "http://tempuri.org/GetStopMonitoring",
+                      "User-Agent": "Mozilla/5.0"
+                  }
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      xml = r.read().decode()
+                  visits = len(re.findall(r'<MonitoredStopVisit', xml, re.I))
+                  print(f"SIRI REF={ref}  LEN={len(xml)}  VISITS={visits}")
+                  if visits > 0:
+                      idx = xml.find('<MonitoredStopVisit')
+                      print("SAMPLE:", xml[idx:idx+500])
+                  return xml, visits
+              except Exception as e:
+                  print(f"SIRI REF={ref} ERROR:", e)
+                  return "", 0
 
-# Write empty payload for now so KV stays updated
-payload = {
-    "stop": "Ave. Georgiou Griva Digeni - Neas Egkomis",
-    "code": "706",
-    "stop_id": "706",
-    "updated": datetime.utcnow().isoformat() + "Z",
-    "arrivals": [],
-    "note": "debug run"
-}
-kv_url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['CF_ACCOUNT_ID']}/storage/kv/namespaces/{os.environ['CF_NAMESPACE_ID']}/values/stop_706"
-kv_req = urllib.request.Request(
-    kv_url,
-    data=json.dumps(payload).encode(),
-    headers={
-        "Authorization": f"Bearer {os.environ['CF_API_TOKEN']}",
-        "Content-Type": "application/json"
-    },
-    method="PUT"
-)
-with urllib.request.urlopen(kv_req) as kv_resp:
-    print("KV:", kv_resp.read().decode())
+          for ref in ["706", "3162"]:
+              try_siri(ref)
+
+          print("\\n===== Checking GTFS-RT =====")
+          try:
+              gtfs_req = urllib.request.Request("http://20.19.98.194:8328/Api/api/gtfs-realtime")
+              with 
