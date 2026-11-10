@@ -19,29 +19,24 @@ jobs:
           import os, json, urllib.request, re
           from datetime import datetime
 
-          def try_siri(ref):
-              SOAP = f'''<?xml version="1.0" encoding="utf-8"?>
-              <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-                <soap:Body>
-                  <GetStopMonitoring xmlns="http://tempuri.org/">
-                    <request>
-                      <ServiceRequestInfo>
-                        <RequestTimestamp>{datetime.utcnow().isoformat()}Z</RequestTimestamp>
-                        <RequestorRef>test</RequestorRef>
-                      </ServiceRequestInfo>
-                      <Request version="1.3" xmlns="">
-                        <MonitoringRef xmlns="http://www.siri.org.uk/siri">{ref}</MonitoringRef>
-                        <MaximumStopVisits xmlns="http://www.siri.org.uk/siri">8</MaximumStopVisits>
-                        <StopMonitoringDetailLevel xmlns="http://www.siri.org.uk/siri">normal</StopMonitoringDetailLevel>
-                      </Request>
-                    </request>
-                  </GetStopMonitoring>
-                </soap:Body>
-              </soap:Envelope>'''
-
+          def call_siri(ref):
+              soap = """<?xml version="1.0" encoding="utf-8"?>
+          <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+            <soap:Body>
+              <GetStopMonitoring xmlns="http://tempuri.org/">
+                <request>
+                  <Request version="1.3" xmlns="">
+                    <MonitoringRef xmlns="http://www.siri.org.uk/siri">""" + ref + """</MonitoringRef>
+                    <MaximumStopVisits xmlns="http://www.siri.org.uk/siri">8</MaximumStopVisits>
+                    <StopMonitoringDetailLevel xmlns="http://www.siri.org.uk/siri">normal</StopMonitoringDetailLevel>
+                  </Request>
+                </request>
+              </GetStopMonitoring>
+            </soap:Body>
+          </soap:Envelope>"""
               req = urllib.request.Request(
                   "http://20.19.98.194:8313/SiriWS.asmx",
-                  data=SOAP.encode(),
+                  data=soap.encode(),
                   headers={
                       "Content-Type": "text/xml; charset=utf-8",
                       "SOAPAction": "http://tempuri.org/GetStopMonitoring",
@@ -49,22 +44,28 @@ jobs:
                   }
               )
               try:
-                  with urllib.request.urlopen(req, timeout=20) as r:
-                      xml = r.read().decode()
-                  visits = len(re.findall(r'<MonitoredStopVisit', xml, re.I))
-                  print(f"SIRI REF={ref}  LEN={len(xml)}  VISITS={visits}")
-                  if visits > 0:
-                      idx = xml.find('<MonitoredStopVisit')
-                      print("SAMPLE:", xml[idx:idx+500])
-                  return xml, visits
+                  resp = urllib.request.urlopen(req, timeout=20)
+                  xml = resp.read().decode()
+                  visits = xml.count("<MonitoredStopVisit")
+                  print("REF=" + ref + " LEN=" + str(len(xml)) + " VISITS=" + str(visits))
+                  return xml
               except Exception as e:
-                  print(f"SIRI REF={ref} ERROR:", e)
-                  return "", 0
+                  print("REF=" + ref + " ERROR: " + str(e))
+                  return ""
 
-          for ref in ["706", "3162"]:
-              try_siri(ref)
+          print("Testing stop references...")
+          xml706 = call_siri("706")
+          xml3162 = call_siri("3162")
 
-          print("\\n===== Checking GTFS-RT =====")
+          print("Checking GTFS-RT...")
           try:
-              gtfs_req = urllib.request.Request("http://20.19.98.194:8328/Api/api/gtfs-realtime")
-              with 
+              gtfs = urllib.request.urlopen("http://20.19.98.194:8328/Api/api/gtfs-realtime", timeout=15)
+              data = gtfs.read()
+              print("GTFS-RT OK length=" + str(len(data)))
+          except Exception as e:
+              print("GTFS-RT error: " + str(e))
+
+          payload = {
+              "stop": "Ave. Georgiou Griva Digeni - Neas Egkomis",
+              "code": "706",
+              "updated": datetime.utcnow().isoformat() + "Z",
