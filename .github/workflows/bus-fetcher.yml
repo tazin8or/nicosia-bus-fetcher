@@ -19,7 +19,7 @@ jobs:
           import os, json, urllib.request, re
           from datetime import datetime
 
-          STOP_ID = "3162"
+          STOP_ID = "706"
           SOAP = f'''<?xml version="1.0" encoding="utf-8"?>
           <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
             <soap:Body>
